@@ -1,9 +1,9 @@
 import os
 import streamlit as st
 from datetime import datetime
-from groq import Groq # type: ignore
+from groq import Groq 
 from io import BytesIO
-from fpdf import FPDF # type: ignore
+from fpdf import FPDF 
 
 # Initialize the Groq client using the API key from environment variables
 api_key = "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"
