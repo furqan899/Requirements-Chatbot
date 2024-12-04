@@ -4,3 +4,11 @@ requests
 streamlit
 datetime
 fpdf
+streamlit-agraph
+mermaid-py
+PyPDF2
+python-docx
+groq
+langchain-community
+fitz
+streamlit-mermaid
