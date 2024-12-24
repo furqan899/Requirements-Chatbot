@@ -12,3 +12,4 @@ groq
 langchain-community
 fitz
 streamlit-mermaid
+plotly
