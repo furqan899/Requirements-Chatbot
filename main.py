@@ -1,10 +1,11 @@
 import os
-import random  # Import random module for generating timelines
+import random
 import streamlit as st
 from datetime import datetime
-from groq import Groq  # type: ignore
+from mermaid import Mermaid
+from groq import Groq
 
-# Initialize the Groq client using the API key from environment variables
+# Initialize the Groq client using the API key
 api_key = "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"
 if not api_key:
     raise ValueError("API key is missing")
@@ -18,11 +19,20 @@ def groq_response(prompt):
                 {"role": "system", "content": "You are a project proposal assistant chatbot."},
                 {"role": "user", "content": prompt}
             ],
-            model="llama3-8b-8192"  # Specify the model (replace with your desired model)
+            model="llama3-8b-8192"  # Specify the model
         )
         return chat_completion.choices[0].message.content.strip()
     except Exception as e:
         return f"Error: {str(e)}"
+
+# Function to render Mermaid diagrams using mermaid-py
+def render_with_mermaid_py(diagram_code):
+    try:
+        diagram = Mermaid(diagram_code)
+        diagram_html = diagram.script  # This will fetch the diagram HTML code
+        st.markdown(f"<div>{diagram_html}</div>", unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Error rendering Mermaid diagram: {str(e)}")
 
 # Generate WBS and Estimation with dynamic complexity adjustment
 def generate_wbs_and_estimation(project_name, modules, tech_stack, complexity, overlap, roadmap_basis):
@@ -44,26 +54,16 @@ def generate_wbs_and_estimation(project_name, modules, tech_stack, complexity, o
     """
     return groq_response(prompt)
 
-# Generate user flow and architecture in Mermaid.js
+# Generate diagrams dynamically
 def generate_diagrams(user_roles):
-    # Adjust the DFD and ERD generation prompts based on the roles
-    dfd_prompt = f"Generate a data flow diagram (DFD) for a system with these user roles: {user_roles}. Include data flows, processes, data stores, and external entities."
-    erd_prompt = f"Generate an entity relationship diagram (ERD) for a system with these user roles: {user_roles}. Focus on database entities, attributes, and relationships."
+    dfd_prompt = f"Generate a data flow diagram (DFD) in Mermaid.js for a system with these user roles: {user_roles}."
+    erd_prompt = f"Generate an entity relationship diagram (ERD) in Mermaid.js for a system with these user roles: {user_roles}."
     
     user_flow = groq_response(f"Generate a user flow in Mermaid.js for the following roles: {user_roles}")
     dfd = groq_response(dfd_prompt)
     erd = groq_response(erd_prompt)
+    
     return user_flow, dfd, erd
-
-
-# Generate timeline estimation based on complexity
-def calculate_timeline(complexity):
-    if complexity == "Low":
-        return random.randint(12, 18)
-    elif complexity == "Medium":
-        return random.randint(18, 36)
-    elif complexity == "High":
-        return random.randint(30, 52)
 
 # Display the full project proposal
 def display_project_proposal(project_name, project_overview, modules, tech_stack, user_roles, wbs, user_flow, dfd, erd):
@@ -83,14 +83,14 @@ def display_project_proposal(project_name, project_overview, modules, tech_stack
     st.markdown("### User Roles")
     st.write(user_roles)
 
-    st.markdown("### User Flow (Mermaid.js)")
-    st.code(user_flow, language="mermaid")
+    st.markdown("### User Flow Diagram")
+    render_with_mermaid_py(user_flow)
 
-    st.markdown("### DFD / Backend Architecture (Mermaid.js)")
-    st.code(dfd, language="mermaid")
+    st.markdown("### Data Flow Diagram (DFD)")
+    render_with_mermaid_py(dfd)
 
-    st.markdown("### ERD (Entity Relationship Diagram) (Mermaid.js)")
-    st.code(erd, language="mermaid")
+    st.markdown("### Entity Relationship Diagram (ERD)")
+    render_with_mermaid_py(erd)
 
     st.markdown("### Work Breakdown Structure (WBS)")
     st.write(wbs)
@@ -116,22 +116,15 @@ def main():
         if roadmap == "Yes":
             roadmap_basis = st.radio("Specify the roadmap basis", ("Week-based", "Month-based"))
         else:
-            roadmap_basis = "No roadmap"  # Default when roadmap is not required
+            roadmap_basis = "No roadmap"
 
         complexity = st.selectbox("Select project complexity", ["Low", "Medium", "High"])
-
-        # Ensure required fields are filled
-        if not project_name or not modules:
-            st.error("Project name and modules are required fields!")
 
         # Submit Button
         submitted = st.form_submit_button("Generate Proposal")
 
         if submitted:
             st.info("Generating proposal... This may take a moment.")
-
-            # Calculate timeline based on complexity
-            total_timeline = calculate_timeline(complexity)
 
             # Generate WBS and diagrams
             wbs = generate_wbs_and_estimation(
@@ -156,10 +149,6 @@ def main():
                 dfd,
                 erd
             )
-
-            # Display timeline estimation
-            # st.markdown("### Timeline Estimation")
-            # st.write(f"**Total Project Timeline:** {total_timeline} weeks (including planning, execution, and post-deployment).")
 
 if __name__ == "__main__":
     main()
