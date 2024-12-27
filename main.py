@@ -2,10 +2,11 @@ import os
 import random
 import streamlit as st
 from datetime import datetime
-from mermaid import Mermaid
-from groq import Groq
+from groq import Groq  # type: ignore
+from docx import Document  # For generating Word document
+from PyPDF2 import PdfReader  # For extracting text from PDF files
 
-# Initialize the Groq client using the API key
+# Initialize the Groq client using the API key from environment variables
 api_key = "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"
 if not api_key:
     raise ValueError("API key is missing")
@@ -19,20 +20,11 @@ def groq_response(prompt):
                 {"role": "system", "content": "You are a project proposal assistant chatbot."},
                 {"role": "user", "content": prompt}
             ],
-            model="llama3-8b-8192"  # Specify the model
+            model="llama3-8b-8192"
         )
         return chat_completion.choices[0].message.content.strip()
     except Exception as e:
         return f"Error: {str(e)}"
-
-# Function to render Mermaid diagrams using mermaid-py
-def render_with_mermaid_py(diagram_code):
-    try:
-        diagram = Mermaid(diagram_code)
-        diagram_html = diagram.script  # This will fetch the diagram HTML code
-        st.markdown(f"<div>{diagram_html}</div>", unsafe_allow_html=True)
-    except Exception as e:
-        st.error(f"Error rendering Mermaid diagram: {str(e)}")
 
 # Generate WBS and Estimation with dynamic complexity adjustment
 def generate_wbs_and_estimation(project_name, modules, tech_stack, complexity, overlap, roadmap_basis):
@@ -54,19 +46,55 @@ def generate_wbs_and_estimation(project_name, modules, tech_stack, complexity, o
     """
     return groq_response(prompt)
 
-# Generate diagrams dynamically
+# Generate user flow and architecture in Mermaid.js
 def generate_diagrams(user_roles):
-    dfd_prompt = f"Generate a data flow diagram (DFD) in Mermaid.js for a system with these user roles: {user_roles}."
-    erd_prompt = f"Generate an entity relationship diagram (ERD) in Mermaid.js for a system with these user roles: {user_roles}."
+    dfd_prompt = f"Generate a data flow diagram (DFD) for a system with these user roles: {user_roles}. Include data flows, processes, data stores, and external entities."
+    erd_prompt = f"Generate an entity relationship diagram (ERD) for a system with these user roles: {user_roles}. Focus on database entities, attributes, and relationships."
     
     user_flow = groq_response(f"Generate a user flow in Mermaid.js for the following roles: {user_roles}")
     dfd = groq_response(dfd_prompt)
     erd = groq_response(erd_prompt)
-    
     return user_flow, dfd, erd
 
+# Generate timeline estimation based on complexity
+def calculate_timeline(complexity):
+    if complexity == "Low":
+        return random.randint(12, 18)
+    elif complexity == "Medium":
+        return random.randint(18, 36)
+    elif complexity == "High":
+        return random.randint(30, 52)
+
+# Function to extract text from DOC or PDF files
+def extract_text_from_file(uploaded_file):
+    if uploaded_file.type == "application/pdf":
+        pdf_reader = PdfReader(uploaded_file)
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text()
+        return text
+    elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        doc = Document(uploaded_file)
+        text = "\n".join([para.text for para in doc.paragraphs])
+        return text
+    return None
+
+# Generate cost estimations (simplified model)
+def generate_cost_estimation(wbs, complexity):
+    base_cost = {"UI/UX": 1000, "Frontend": 2000, "Backend": 3000, "ML": 5000, "API Integration": 1500, "QA": 1200, "Deployment": 800}
+    total_cost = 0
+    for task in wbs.split("\n"):
+        for key in base_cost.keys():
+            if key in task:
+                total_cost += base_cost[key]
+    if complexity == "Medium":
+        total_cost *= 1.25  # 25% increase for medium complexity
+    elif complexity == "High":
+        total_cost *= 1.5  # 50% increase for high complexity
+    return total_cost
+
 # Display the full project proposal
-def display_project_proposal(project_name, project_overview, modules, tech_stack, user_roles, wbs, user_flow, dfd, erd):
+def display_project_proposal(project_name, project_overview, modules, tech_stack, user_roles, wbs, user_flow, dfd, erd, cost_estimation):
     st.markdown(f"### Title: {project_name}")
     st.markdown(f"### Date: {datetime.now().strftime('%Y-%m-%d')}")
     st.markdown("### Reviewer: Mr. Aqib")
@@ -83,17 +111,20 @@ def display_project_proposal(project_name, project_overview, modules, tech_stack
     st.markdown("### User Roles")
     st.write(user_roles)
 
-    st.markdown("### User Flow Diagram")
-    render_with_mermaid_py(user_flow)
+    st.markdown("### User Flow (Mermaid.js)")
+    st.code(user_flow, language="mermaid")
 
-    st.markdown("### Data Flow Diagram (DFD)")
-    render_with_mermaid_py(dfd)
+    st.markdown("### DFD / Backend Architecture (Mermaid.js)")
+    st.code(dfd, language="mermaid")
 
-    st.markdown("### Entity Relationship Diagram (ERD)")
-    render_with_mermaid_py(erd)
+    st.markdown("### ERD (Entity Relationship Diagram) (Mermaid.js)")
+    st.code(erd, language="mermaid")
 
     st.markdown("### Work Breakdown Structure (WBS)")
     st.write(wbs)
+
+    st.markdown("### Cost Estimation")
+    st.write(f"Total Project Cost Estimate: ${cost_estimation}")
 
 # Streamlit app
 def main():
@@ -120,11 +151,23 @@ def main():
 
         complexity = st.selectbox("Select project complexity", ["Low", "Medium", "High"])
 
+        uploaded_file = st.file_uploader("Upload project requirement file (PDF, DOC)", type=["pdf", "docx"])
+
+        if uploaded_file:
+            extracted_text = extract_text_from_file(uploaded_file)
+            st.text_area("Extracted Text", extracted_text, height=300)
+
+        if not project_name or not modules:
+            st.error("Project name and modules are required fields!")
+
         # Submit Button
         submitted = st.form_submit_button("Generate Proposal")
 
         if submitted:
             st.info("Generating proposal... This may take a moment.")
+
+            # Calculate timeline based on complexity
+            total_timeline = calculate_timeline(complexity)
 
             # Generate WBS and diagrams
             wbs = generate_wbs_and_estimation(
@@ -137,6 +180,9 @@ def main():
             )
             user_flow, dfd, erd = generate_diagrams(user_roles)
 
+            # Generate cost estimation
+            cost_estimation = generate_cost_estimation(wbs, complexity)
+
             # Display the project proposal
             display_project_proposal(
                 project_name,
@@ -147,7 +193,8 @@ def main():
                 wbs,
                 user_flow,
                 dfd,
-                erd
+                erd,
+                cost_estimation
             )
 
 if __name__ == "__main__":
