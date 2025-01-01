@@ -2,27 +2,25 @@ import os
 import random
 import streamlit as st
 from datetime import datetime
-from openai import ChatCompletion  # OpenAI API client
+from groq import Groq  # type: ignore
 from docx import Document  # For generating Word document
 from PyPDF2 import PdfReader  # For extracting text from PDF files
 
-# Initialize OpenAI API key
-api_key = "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"
+# Initialize the Groq client using the API key from environment variables
+api_key = "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"
 if not api_key:
-    raise ValueError("OpenAI API key is missing")
+    raise ValueError("API key is missing")
+client = Groq(api_key=api_key)
 
-# Function to interact with OpenAI API
-def chatgpt_response(prompt, model="gpt-3.5-turbo"):
+# Function to interact with Groq API
+def groq_response(prompt):
     try:
-        response = ChatCompletion.create(
-            api_key=api_key,
-            messages=[
-                {"role": "system", "content": "You are a project proposal assistant chatbot."},
-                {"role": "user", "content": prompt}
-            ],
-            model=model
+        chat_completion = client.chat.completions.create(
+            messages=[{"role": "system", "content": "You are a project proposal assistant chatbot."},
+                      {"role": "user", "content": prompt}],
+            model="llama3-8b-8192"
         )
-        return response['choices'][0]['message']['content'].strip()
+        return chat_completion.choices[0].message.content.strip()
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -44,16 +42,16 @@ def generate_wbs_and_estimation(project_name, modules, tech_stack, complexity, o
     - QA and Testing
     - Deployment
     """
-    return chatgpt_response(prompt)
+    return groq_response(prompt)
 
 # Generate user flow and architecture in Mermaid.js
 def generate_diagrams(user_roles):
     dfd_prompt = f"Generate a data flow diagram (DFD) for a system with these user roles: {user_roles}. Include data flows, processes, data stores, and external entities."
     erd_prompt = f"Generate an entity relationship diagram (ERD) for a system with these user roles: {user_roles}. Focus on database entities, attributes, and relationships."
-
-    user_flow = chatgpt_response(f"Generate a user flow in Mermaid.js for the following roles: {user_roles}")
-    dfd = chatgpt_response(dfd_prompt)
-    erd = chatgpt_response(erd_prompt)
+    
+    user_flow = groq_response(f"Generate a user flow in Mermaid.js for the following roles: {user_roles}")
+    dfd = groq_response(dfd_prompt)
+    erd = groq_response(erd_prompt)
     return user_flow, dfd, erd
 
 # Generate timeline estimation based on complexity
@@ -93,6 +91,43 @@ def generate_cost_estimation(wbs, complexity):
         total_cost *= 1.5  # 50% increase for high complexity
     return total_cost
 
+# Save the proposal to a Word document
+def save_to_word(project_name, project_overview, modules, tech_stack, user_roles, wbs, user_flow, dfd, erd, cost_estimation):
+    doc = Document()
+    doc.add_heading(f'Project Proposal: {project_name}', 0)
+
+    doc.add_heading('Project Overview', level=1)
+    doc.add_paragraph(project_overview)
+
+    doc.add_heading('Modules / Features', level=1)
+    doc.add_paragraph(modules)
+
+    doc.add_heading('Tech Stacks', level=1)
+    doc.add_paragraph(tech_stack)
+
+    doc.add_heading('User Roles', level=1)
+    doc.add_paragraph(user_roles)
+
+    doc.add_heading('User Flow (Mermaid.js)', level=1)
+    doc.add_paragraph(user_flow)
+
+    doc.add_heading('DFD / Backend Architecture (Mermaid.js)', level=1)
+    doc.add_paragraph(dfd)
+
+    doc.add_heading('ERD (Entity Relationship Diagram) (Mermaid.js)', level=1)
+    doc.add_paragraph(erd)
+
+    doc.add_heading('Work Breakdown Structure (WBS)', level=1)
+    doc.add_paragraph(wbs)
+
+    doc.add_heading('Cost Estimation', level=1)
+    doc.add_paragraph(f'Total Project Cost Estimate: ${cost_estimation}')
+
+    # Save the document
+    file_path = f"{project_name}_Proposal_{datetime.now().strftime('%Y%m%d%H%M%S')}.docx"
+    doc.save(file_path)
+    return file_path
+
 # Display the full project proposal
 def display_project_proposal(project_name, project_overview, modules, tech_stack, user_roles, wbs, user_flow, dfd, erd, cost_estimation):
     st.markdown(f"### Title: {project_name}")
@@ -125,6 +160,16 @@ def display_project_proposal(project_name, project_overview, modules, tech_stack
 
     st.markdown("### Cost Estimation")
     st.write(f"Total Project Cost Estimate: ${cost_estimation}")
+
+    # Generate and provide download link for the Word document
+    word_file_path = save_to_word(project_name, project_overview, modules, tech_stack, user_roles, wbs, user_flow, dfd, erd, cost_estimation)
+    with open(word_file_path, "rb") as f:
+        st.download_button(
+            label="Download Proposal as Word Document",
+            data=f,
+            file_name=word_file_path,
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
 
 # Streamlit app
 def main():
