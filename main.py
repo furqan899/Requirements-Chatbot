@@ -1,246 +1,307 @@
-import os
-import random
+from typing import Dict, List, Any
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+from langchain.prompts import ChatPromptTemplate
+from langgraph.graph import StateGraph, END
+from pydantic import BaseModel, Field
 import streamlit as st
 from datetime import datetime
-from groq import Groq  # type: ignore
-from docx import Document  # For generating Word document
-from PyPDF2 import PdfReader  # For extracting text from PDF files
+import os
+import openai
+from docx import Document
+from docx.shared import Inches
+import pdfplumber
+from io import StringIO
+from docx import Document as docxDocument
 
-# Initialize the Groq client using the API key from environment variables
-api_key = "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"
-if not api_key:
-    raise ValueError("API key is missing")
-client = Groq(api_key=api_key)
+# Initialize LLM
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# Function to interact with Groq API
-def groq_response(prompt):
-    try:
-        chat_completion = client.chat.completions.create(
-            messages=[{"role": "system", "content": "You are a project proposal assistant chatbot."},
-                      {"role": "user", "content": prompt}],
-            model="llama3-8b-8192"
-        )
-        return chat_completion.choices[0].message.content.strip()
-    except Exception as e:
-        return f"Error: {str(e)}"
-
-# Generate WBS and Estimation with dynamic complexity adjustment
-def generate_wbs_and_estimation(project_name, modules, tech_stack, complexity, overlap, roadmap_basis):
-    prompt = f"""
-    Project Proposal - {project_name}
-    - Features: {modules}
-    - Tech Stack: {tech_stack}
-    - Complexity: {complexity}
-    - Overlap: {overlap}
-    - Roadmap Basis: {roadmap_basis}
-    Based on this, provide a detailed Work Breakdown Structure (WBS) including estimations for:
-    - UI/UX Design
-    - Frontend Development
-    - Backend Development
-    - Machine Learning (if applicable)
-    - API Integration
-    - QA and Testing
-    - Deployment
-    """
-    return groq_response(prompt)
-
-# Generate user flow and architecture in Mermaid.js
-def generate_diagrams(user_roles):
-    dfd_prompt = f"Generate a data flow diagram (DFD) for a system with these user roles: {user_roles}. Include data flows, processes, data stores, and external entities."
-    erd_prompt = f"Generate an entity relationship diagram (ERD) for a system with these user roles: {user_roles}. Focus on database entities, attributes, and relationships."
+def generate_text(messages):
+    # Ensure messages are in the correct format for chat-based models
+    response = openai.ChatCompletion.create(
+        model="gpt-4",  # or "gpt-4" if you're using GPT-4
+        messages=messages,
+        max_tokens=1024,
+        temperature=0.7,
+    )
     
-    user_flow = groq_response(f"Generate a user flow in Mermaid.js for the following roles: {user_roles}")
-    dfd = groq_response(dfd_prompt)
-    erd = groq_response(erd_prompt)
-    return user_flow, dfd, erd
+    # Return the generated text from the response
+    return response['choices'][0]['message']['content']
 
-# Generate timeline estimation based on complexity
-def calculate_timeline(complexity):
-    if complexity == "Low":
-        return random.randint(12, 18)
-    elif complexity == "Medium":
-        return random.randint(18, 36)
-    elif complexity == "High":
-        return random.randint(30, 52)
+# State definition
+class ProjectState(BaseModel):
+    project_info: Dict = Field(default_factory=dict)
+    wbs: str = ""
+    diagrams: Dict[str, str] = Field(default_factory=dict)
+    estimates: Dict[str, Any] = Field(default_factory=dict)
+    documents: Dict[str, str] = Field(default_factory=dict)
+    user_roles: List[str] = []
+    user_flows: Dict[str, List[str]] = Field(default_factory=dict)
+    suggested_tech_stacks: List[str] = []
 
-# Function to extract text from DOC or PDF files
-def extract_text_from_file(uploaded_file):
-    if uploaded_file.type == "application/pdf":
-        pdf_reader = PdfReader(uploaded_file)
+# Nodes for the graph
+def collect_project_info(state):
+    with st.expander("Project Details"):
+        state.project_info["project_name"] = st.text_input("Project Title")
+        state.project_info["overview"] = st.text_area("Project Overview")
+        state.project_info["modules"] = st.text_area("Main Modules/Features")
+
+        # Suggest tech stacks
+        suggested_tech_stacks = suggest_tech_stacks(state.project_info["modules"])
+        state.suggested_tech_stacks = suggested_tech_stacks
+
+        # Allow user to select tech stacks
+        state.project_info["tech_stack"] = st.multiselect("Tech Stack", 
+                                                         suggested_tech_stacks, 
+                                                         default=suggested_tech_stacks)
+
+        # Optional: File upload
+        uploaded_file = st.file_uploader("Upload Project Requirements (optional)")
+        if uploaded_file is not None:
+            # Process the uploaded file (e.g., extract text from doc/pdf)
+            if uploaded_file.type == "application/pdf":
+                # Extract text from PDF using pdfplumber
+                text = extract_text_from_pdf(uploaded_file)
+                st.text_area("Extracted Text", text)
+                state.project_info["overview"] = text  # Example of adding the overview
+            elif uploaded_file.type == "application/msword":
+                # Extract text from Word document
+                text = extract_text_from_docx(uploaded_file)
+                st.text_area("Extracted Text", text)
+                state.project_info["overview"] = text  # Example of adding the overview
+        return {"project_info": state.project_info}
+
+def extract_text_from_pdf(uploaded_file):
+    with pdfplumber.open(uploaded_file) as pdf:
         text = ""
-        for page in pdf_reader.pages:
+        for page in pdf.pages:
             text += page.extract_text()
-        return text
-    elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        doc = Document(uploaded_file)
-        text = "\n".join([para.text for para in doc.paragraphs])
-        return text
-    return None
+    return text
 
-# Generate cost estimations (simplified model)
-def generate_cost_estimation(wbs, complexity):
-    base_cost = {"UI/UX": 1000, "Frontend": 2000, "Backend": 3000, "ML": 5000, "API Integration": 1500, "QA": 1200, "Deployment": 800}
-    total_cost = 0
-    for task in wbs.split("\n"):
-        for key in base_cost.keys():
-            if key in task:
-                total_cost += base_cost[key]
-    if complexity == "Medium":
-        total_cost *= 1.25  # 25% increase for medium complexity
-    elif complexity == "High":
-        total_cost *= 1.5  # 50% increase for high complexity
-    return total_cost
+def extract_text_from_docx(uploaded_file):
+    doc = docxDocument.open(uploaded_file)
+    text = ""
+    for para in doc.paragraphs:
+        text += para.text + "\n"
+    return text
 
-# Save the proposal to a Word document
-def save_to_word(project_name, project_overview, modules, tech_stack, user_roles, wbs, user_flow, dfd, erd, cost_estimation):
+def define_user_roles(state):
+    with st.expander("User Roles"):
+        state.user_roles = st.multiselect("User Roles", ["Admin", "User", "Guest", "Other"])
+        for role in state.user_roles:
+            user_stories = st.text_area(f"User Stories for {role}")
+            state.user_flows[role] = user_stories.split("\n")
+        return state
+
+def generate_wbs(state):
+    prompt = ChatPromptTemplate.from_template("""
+    Create a detailed WBS for project:
+    {project_details}
+    Include time estimates and dependencies.
+    Consider tech stacks: {tech_stacks}
+    """)
+    chain = prompt | generate_text | StrOutputParser()
+    state.wbs = chain.invoke({
+        "project_details": str(state.project_info),
+        "tech_stacks": ", ".join(state.project_info["tech_stack"])
+    })
+    return state
+
+def generate_diagrams(state):
+    diagram_types = {
+        "dfd": """Generate a Mermaid.js Data Flow Diagram for:
+                 Roles: {roles}
+                 Features: {features}""",
+        "erd": """Generate a Mermaid.js Entity Relationship Diagram for:
+                 Project: {project}
+                 Features: {features}""",
+        "user_flow": """Generate a Mermaid.js User Flow diagram for:
+                        Roles: {roles}
+                        Features: {features}""",
+        "backend_arch": """Generate a Mermaid.js diagram for the backend architecture of this project:
+                          Tech Stacks: {tech_stacks}
+                          Modules: {modules}"""
+    }
+
+    for diagram_type, prompt_template in diagram_types.items():
+        prompt = ChatPromptTemplate.from_template(prompt_template)
+        chain = prompt | generate_text | StrOutputParser()
+        state.diagrams[diagram_type] = chain.invoke({
+            "roles": ", ".join(state.user_roles),
+            "features": state.project_info.get("modules", ""),
+            "project": state.project_info.get("project_name", ""),
+            "tech_stacks": ", ".join(state.project_info["tech_stack"])
+        })
+    return state
+
+def calculate_estimates(state):
+    prompt = ChatPromptTemplate.from_template("""
+    Based on WBS:
+    {wbs}
+    Generate detailed time and cost estimates considering complexity: {complexity}
+    """)
+    chain = prompt | generate_text | StrOutputParser()
+    estimates = chain.invoke({
+        "wbs": state.wbs,
+        "complexity": state.project_info.get("complexity", "Medium")
+    })
+
+    state.estimates = {
+        "time": generate_time_table(estimates),
+        "cost": generate_cost_breakdown(estimates)
+    }
+    return state
+
+def generate_documents(state):
+    document_types = {
+        "proposal": """Create a comprehensive project proposal including:
+                       {project_info}
+                       WBS: {wbs}
+                       Estimates: {estimates}""",
+        "technical_spec": """Create technical specifications based on:
+                             {project_info}
+                             Diagrams: {diagrams}"""
+    }
+
+    for doc_type, prompt_template in document_types.items():
+        prompt = ChatPromptTemplate.from_template(prompt_template)
+        chain = prompt | generate_text | StrOutputParser()
+        state.documents[doc_type] = chain.invoke({
+            "project_info": str(state.project_info),
+            "wbs": state.wbs,
+            "estimates": str(state.estimates),
+            "diagrams": str(state.diagrams)
+        })
+    return state
+
+# Helper functions
+def generate_time_table(estimates_text: str) -> Dict:
+    prompt = ChatPromptTemplate.from_template("""
+    Convert this estimation text to a structured time table:
+    {estimates}
+    """)
+    chain = prompt | generate_text | StrOutputParser()
+    return eval(chain.invoke({"estimates": estimates_text}))
+
+def generate_cost_breakdown(estimates_text: str) -> Dict:
+    prompt = ChatPromptTemplate.from_template("""
+    Convert this estimation text to a detailed cost breakdown:
+    {estimates}
+    """)
+    chain = prompt | generate_text | StrOutputParser()
+    return eval(chain.invoke({"estimates": estimates_text}))
+
+def suggest_tech_stacks(modules):
+    prompt = ChatPromptTemplate.from_template("""
+    Suggest relevant tech stacks for a project with the following modules:
+    {modules}
+    """)
+    chain = prompt | generate_text | StrOutputParser()
+    suggested_stacks = chain.invoke({"modules": modules})
+    return suggested_stacks.split(", ")
+
+def generate_proposal_document(state):
     doc = Document()
-    doc.add_heading(f'Project Proposal: {project_name}', 0)
+
+    doc.add_heading('Project Proposal', 0)
+
+    doc.add_heading('Project Title', level=1)
+    doc.add_paragraph(state.project_info["project_name"])
 
     doc.add_heading('Project Overview', level=1)
-    doc.add_paragraph(project_overview)
+    doc.add_paragraph(state.project_info["overview"])
 
-    doc.add_heading('Modules / Features', level=1)
-    doc.add_paragraph(modules)
+    doc.add_heading('Modules/Features', level=1)
+    doc.add_paragraph(state.project_info["modules"])
 
     doc.add_heading('Tech Stacks', level=1)
-    doc.add_paragraph(tech_stack)
+    for stack in state.project_info["tech_stack"]:
+        doc.add_paragraph(f"- {stack}")
 
-    doc.add_heading('User Roles', level=1)
-    doc.add_paragraph(user_roles)
+    doc.add_heading('User Roles and Flows', level=1)
+    for role, flows in state.user_flows.items():
+        doc.add_heading(f"{role}", level=2)
+        for flow in flows:
+            doc.add_paragraph(f"- {flow}")
 
-    doc.add_heading('User Flow (Mermaid.js)', level=1)
-    doc.add_paragraph(user_flow)
-
-    doc.add_heading('DFD / Backend Architecture (Mermaid.js)', level=1)
-    doc.add_paragraph(dfd)
-
-    doc.add_heading('ERD (Entity Relationship Diagram) (Mermaid.js)', level=1)
-    doc.add_paragraph(erd)
+    doc.add_heading('Diagrams', level=1)
+    for diagram_type, diagram in state.diagrams.items():
+        doc.add_heading(f"{diagram_type.upper()}", level=2)
+        doc.add_paragraph(diagram)
 
     doc.add_heading('Work Breakdown Structure (WBS)', level=1)
-    doc.add_paragraph(wbs)
+    doc.add_paragraph(state.wbs)
 
-    doc.add_heading('Cost Estimation', level=1)
-    doc.add_paragraph(f'Total Project Cost Estimate: ${cost_estimation}')
+    doc.add_heading('Time Estimates', level=1)
+    for key, value in state.estimates["time"].items():
+        doc.add_paragraph(f"{key}: {value}")
+
+    doc.add_heading('Cost Estimates', level=1)
+    for key, value in state.estimates["cost"].items():
+        doc.add_paragraph(f"{key}: {value}")
+
+    doc.add_heading('Disclaimer', level=1)
+    doc.add_paragraph("This project proposal is subject to change based on further analysis and client feedback.")
 
     # Save the document
-    file_path = f"{project_name}_Proposal_{datetime.now().strftime('%Y%m%d%H%M%S')}.docx"
-    doc.save(file_path)
-    return file_path
+    current_datetime = datetime.now().strftime("%Y%m%d%H%M%S")
+    doc_name = f"project_proposal_{current_datetime}.docx"
+    doc.save(doc_name)
 
-# Display the full project proposal
-def display_project_proposal(project_name, project_overview, modules, tech_stack, user_roles, wbs, user_flow, dfd, erd, cost_estimation):
-    st.markdown(f"### Title: {project_name}")
-    st.markdown(f"### Date: {datetime.now().strftime('%Y-%m-%d')}")
-    st.markdown("### Reviewer: Mr. Aqib")
+    return doc_name
 
-    st.markdown("### Project Overview")
-    st.write(project_overview)
+# Graph definition
+def create_graph() -> StateGraph:
+    workflow = StateGraph(ProjectState)
 
-    st.markdown("### Modules / Features")
-    st.write(modules)
+    workflow.add_node("collect_info", collect_project_info)
+    workflow.add_node("define_user_roles", define_user_roles)
+    workflow.add_node("generate_wbs", generate_wbs)
+    workflow.add_node("generate_diagrams", generate_diagrams)
+    workflow.add_node("calculate_estimates", calculate_estimates)
+    workflow.add_node("generate_documents", generate_documents)
 
-    st.markdown("### Tech Stacks")
-    st.write(tech_stack)
+    workflow.set_entry_point("collect_info")
 
-    st.markdown("### User Roles")
-    st.write(user_roles)
+    workflow.add_edge("collect_info", "define_user_roles")
+    workflow.add_edge("define_user_roles", "generate_wbs")
+    workflow.add_edge("generate_wbs", "generate_diagrams")
+    workflow.add_edge("generate_diagrams", "calculate_estimates")
+    workflow.add_edge("calculate_estimates", "generate_documents")
+    workflow.add_edge("generate_documents", END)
 
-    st.markdown("### User Flow (Mermaid.js)")
-    st.code(user_flow, language="mermaid")
+    return workflow.compile()
 
-    st.markdown("### DFD / Backend Architecture (Mermaid.js)")
-    st.code(dfd, language="mermaid")
-
-    st.markdown("### ERD (Entity Relationship Diagram) (Mermaid.js)")
-    st.code(erd, language="mermaid")
-
-    st.markdown("### Work Breakdown Structure (WBS)")
-    st.write(wbs)
-
-    st.markdown("### Cost Estimation")
-    st.write(f"Total Project Cost Estimate: ${cost_estimation}")
-
-    # Generate and provide download link for the Word document
-    word_file_path = save_to_word(project_name, project_overview, modules, tech_stack, user_roles, wbs, user_flow, dfd, erd, cost_estimation)
-    with open(word_file_path, "rb") as f:
-        st.download_button(
-            label="Download Proposal as Word Document",
-            data=f,
-            file_name=word_file_path,
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        )
-
-# Streamlit app
+# Streamlit interface
 def main():
-    st.title("Project Proposal Chatbot")
+    st.title("Project Proposal Generator")
 
-    with st.form(key="project_form"):
-        project_name = st.text_input("Enter the project title", value="My Project")
-        project_overview = st.text_area("Provide the overall project idea")
-        modules = st.text_area("List the main modules or features of the application")
-        tech_stack = st.text_input("Do you have a preferred tech stack? (Leave blank for suggestions)")
-        user_roles = st.text_input("Define the user roles (e.g., Admin, User)")
+    graph = create_graph()
+    state = ProjectState()
+    final_state = graph.invoke(state)
 
-        design = st.radio("Do you have the design?", ("Yes", "No"))
-        overlap = None
-        if design == "Yes":
-            overlap = st.radio("Do you want FE/BE overlap?", ("Yes", "No"))
+    display_results(final_state)
 
-        roadmap = st.radio("Do you need the Roadmap?", ("Yes", "No"))
-        roadmap_basis = None
-        if roadmap == "Yes":
-            roadmap_basis = st.radio("Specify the roadmap basis", ("Week-based", "Month-based"))
-        else:
-            roadmap_basis = "No roadmap"
+def display_results(state: ProjectState):
+    st.header("Generated Proposal")
 
-        complexity = st.selectbox("Select project complexity", ["Low", "Medium", "High"])
+    st.subheader("Work Breakdown Structure")
+    st.text(state.wbs)
 
-        uploaded_file = st.file_uploader("Upload project requirement file (PDF, DOC)", type=["pdf", "docx"])
+    st.subheader("Diagrams")
+    for diagram_type, diagram in state.diagrams.items():
+        st.markdown(f"### {diagram_type.upper()}")
+        st.code(diagram, language="mermaid")
 
-        if uploaded_file:
-            extracted_text = extract_text_from_file(uploaded_file)
-            st.text_area("Extracted Text", extracted_text, height=300)
+    st.subheader("Estimates")
+    st.write("Time Estimates:", state.estimates["time"])
+    st.write("Cost Breakdown:", state.estimates["cost"])
 
-        if not project_name or not modules:
-            st.error("Project name and modules are required fields!")
-
-        # Submit Button
-        submitted = st.form_submit_button("Generate Proposal")
-
-        if submitted:
-            st.info("Generating proposal... This may take a moment.")
-
-            # Calculate timeline based on complexity
-            total_timeline = calculate_timeline(complexity)
-
-            # Generate WBS and diagrams
-            wbs = generate_wbs_and_estimation(
-                project_name,
-                modules,
-                tech_stack or "Tech stack not specified; recommend.",
-                complexity,
-                overlap if overlap else "No FE/BE overlap",
-                roadmap_basis
-            )
-            user_flow, dfd, erd = generate_diagrams(user_roles)
-
-            # Generate cost estimation
-            cost_estimation = generate_cost_estimation(wbs, complexity)
-
-            # Display the project proposal
-            display_project_proposal(
-                project_name,
-                project_overview,
-                modules,
-                tech_stack,
-                user_roles,
-                wbs,
-                user_flow,
-                dfd,
-                erd,
-                cost_estimation
-            )
+    st.subheader("Documents")
+    doc_name = generate_proposal_document(state)
+    st.success(f"Proposal document generated: {doc_name}")
+    st.download_button("Download Proposal", doc_name, file_name=doc_name)
 
 if __name__ == "__main__":
     main()
