@@ -2,25 +2,27 @@ import os
 import random
 import streamlit as st
 from datetime import datetime
-from groq import Groq  # type: ignore
 from docx import Document  # For generating Word document
 from PyPDF2 import PdfReader  # For extracting text from PDF files
+import openai
 
-# Initialize the Groq client using the API key from environment variables
-api_key = "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"
+# Initialize the OpenAI API client using the API key
+api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
-    raise ValueError("API key is missing")
-client = Groq(api_key=api_key)
+    raise ValueError("OpenAI API key is missing")
+openai.api_key = api_key
 
-# Function to interact with Groq API
-def groq_response(prompt):
+# Function to interact with OpenAI API
+def openai_response(prompt):
     try:
-        chat_completion = client.chat.completions.create(
-            messages=[{"role": "system", "content": "You are a project proposal assistant chatbot."},
-                      {"role": "user", "content": prompt}],
-            model="llama3-8b-8192"
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a project proposal assistant chatbot."},
+                {"role": "user", "content": prompt}
+            ]
         )
-        return chat_completion.choices[0].message.content.strip()
+        return response["choices"][0]["message"]["content"].strip()
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -42,16 +44,16 @@ def generate_wbs_and_estimation(project_name, modules, tech_stack, complexity, o
     - QA and Testing
     - Deployment
     """
-    return groq_response(prompt)
+    return openai_response(prompt)
 
 # Generate user flow and architecture in Mermaid.js
 def generate_diagrams(user_roles):
     dfd_prompt = f"Generate a data flow diagram (DFD) for a system with these user roles: {user_roles}. Include data flows, processes, data stores, and external entities."
     erd_prompt = f"Generate an entity relationship diagram (ERD) for a system with these user roles: {user_roles}. Focus on database entities, attributes, and relationships."
-    
-    user_flow = groq_response(f"Generate a user flow in Mermaid.js for the following roles: {user_roles}")
-    dfd = groq_response(dfd_prompt)
-    erd = groq_response(erd_prompt)
+
+    user_flow = openai_response(f"Generate a user flow in Mermaid.js for the following roles: {user_roles}")
+    dfd = openai_response(dfd_prompt)
+    erd = openai_response(erd_prompt)
     return user_flow, dfd, erd
 
 # Generate timeline estimation based on complexity
