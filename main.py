@@ -1,28 +1,27 @@
 import os
 import random
 import streamlit as st
+import pandas as pd
 from datetime import datetime
+from groq import Groq  # type: ignore
 from docx import Document  # For generating Word document
 from PyPDF2 import PdfReader  # For extracting text from PDF files
-import openai
 
-# Initialize the OpenAI API client using the API key
-api_key = os.getenv("OPENAI_API_KEY")
+# Initialize the Groq client using the API key from environment variables
+api_key = "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"
 if not api_key:
-    raise ValueError("OpenAI API key is missing")
-openai.api_key = api_key
+    raise ValueError("API key is missing")
+client = Groq(api_key=api_key)
 
-# Function to interact with OpenAI API
-def openai_response(prompt):
+# Function to interact with Groq API
+def groq_response(prompt):
     try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a project proposal assistant chatbot."},
-                {"role": "user", "content": prompt}
-            ]
+        chat_completion = client.chat.completions.create(
+            messages=[{"role": "system", "content": "You are a project proposal assistant chatbot."},
+                      {"role": "user", "content": prompt}],
+            model="llama3-8b-8192"
         )
-        return response["choices"][0]["message"]["content"].strip()
+        return chat_completion.choices[0].message.content.strip()
     except Exception as e:
         return f"Error: {str(e)}"
 
@@ -44,17 +43,53 @@ def generate_wbs_and_estimation(project_name, modules, tech_stack, complexity, o
     - QA and Testing
     - Deployment
     """
-    return openai_response(prompt)
+    return groq_response(prompt)
 
 # Generate user flow and architecture in Mermaid.js
 def generate_diagrams(user_roles):
     dfd_prompt = f"Generate a data flow diagram (DFD) for a system with these user roles: {user_roles}. Include data flows, processes, data stores, and external entities."
     erd_prompt = f"Generate an entity relationship diagram (ERD) for a system with these user roles: {user_roles}. Focus on database entities, attributes, and relationships."
-
-    user_flow = openai_response(f"Generate a user flow in Mermaid.js for the following roles: {user_roles}")
-    dfd = openai_response(dfd_prompt)
-    erd = openai_response(erd_prompt)
+    
+    user_flow = groq_response(f"Generate a user flow in Mermaid.js for the following roles: {user_roles}")
+    dfd = groq_response(dfd_prompt)
+    erd = groq_response(erd_prompt)
     return user_flow, dfd, erd
+
+# Modified function to generate user stories in tabular format
+# Modified function to generate user stories and use cases in tabular format
+def generate_user_stories_and_use_cases(modules, user_roles):
+    prompt = f"""
+    Based on the following project modules and user roles:
+    - Modules: {modules}
+    - User Roles: {user_roles}
+    
+    Generate user stories and use cases in a structured format with these columns:
+    Role | User Story | Use Case
+    
+    Ensure each story follows "As a [Role], I can [Action] so that [Goal]" format.
+    """
+    response = groq_response(prompt)
+    
+    # Convert the response into a structured format
+    stories = []
+    for line in response.split('\n'):
+        if 'As a' in line:
+            try:
+                role = line.split('As a')[1].split(',')[0].strip()
+                action = line.split('I can')[1].split('so that')[0].strip()
+                goal = line.split('so that')[1].strip()
+                # Determine module based on the action and available modules
+                module = next((m for m in modules.split(',') if m.lower() in action.lower()), "General")
+                user_story = f"As a {role}, I can {action} so that {goal}"
+                use_case = f"{role} can perform the action: {action} to achieve: {goal}"
+                stories.append({
+                    "Role": role,
+                    "User Story": user_story,
+                    "Use Case": use_case
+                })
+            except:
+                continue
+    return stories
 
 # Generate timeline estimation based on complexity
 def calculate_timeline(complexity):
@@ -79,22 +114,43 @@ def extract_text_from_file(uploaded_file):
         return text
     return None
 
-# Generate cost estimations (simplified model)
+# Modified function for detailed cost estimation
 def generate_cost_estimation(wbs, complexity):
-    base_cost = {"UI/UX": 1000, "Frontend": 2000, "Backend": 3000, "ML": 5000, "API Integration": 1500, "QA": 1200, "Deployment": 800}
-    total_cost = 0
-    for task in wbs.split("\n"):
-        for key in base_cost.keys():
-            if key in task:
-                total_cost += base_cost[key]
-    if complexity == "Medium":
-        total_cost *= 1.25  # 25% increase for medium complexity
-    elif complexity == "High":
-        total_cost *= 1.5  # 50% increase for high complexity
-    return total_cost
+    # Define base costs and complexity multipliers
+    base_costs = {
+        "UI/UX": {"Design": 1000, "Prototyping": 500, "User Testing": 300},
+        "Frontend": {"Development": 2000, "Integration": 500, "Optimization": 300},
+        "Backend": {"API Development": 2000, "Database": 1000, "Security": 800},
+        "ML": {"Model Development": 3000, "Training": 1500, "Integration": 1000},
+        "API Integration": {"External APIs": 1000, "Documentation": 500},
+        "QA": {"Testing": 800, "Automation": 400},
+        "Deployment": {"Setup": 500, "Configuration": 300}
+    }
+    
+    complexity_multiplier = {
+        "Low": 1.0,
+        "Medium": 1.25,
+        "High": 1.5
+    }
+    
+    # Calculate detailed costs
+    detailed_costs = []
+    for category, tasks in base_costs.items():
+        category_total = 0
+        for task, cost in tasks.items():
+            adjusted_cost = cost * complexity_multiplier[complexity]
+            category_total += adjusted_cost
+            detailed_costs.append({
+                "Category": category,
+                "Task": task,
+                "Base Cost": cost,
+                "Adjusted Cost": round(adjusted_cost, 2)
+            })
+    
+    return detailed_costs
 
 # Save the proposal to a Word document
-def save_to_word(project_name, project_overview, modules, tech_stack, user_roles, wbs, user_flow, dfd, erd, cost_estimation):
+def save_to_word(project_name, project_overview, modules, tech_stack, user_roles, user_stories, wbs, user_flow, dfd, erd, cost_estimation):
     doc = Document()
     doc.add_heading(f'Project Proposal: {project_name}', 0)
 
@@ -110,6 +166,9 @@ def save_to_word(project_name, project_overview, modules, tech_stack, user_roles
     doc.add_heading('User Roles', level=1)
     doc.add_paragraph(user_roles)
 
+    doc.add_heading('User Stories and Use Cases', level=1)
+    doc.add_paragraph(user_stories)
+
     doc.add_heading('User Flow (Mermaid.js)', level=1)
     doc.add_paragraph(user_flow)
 
@@ -123,7 +182,11 @@ def save_to_word(project_name, project_overview, modules, tech_stack, user_roles
     doc.add_paragraph(wbs)
 
     doc.add_heading('Cost Estimation', level=1)
-    doc.add_paragraph(f'Total Project Cost Estimate: ${cost_estimation}')
+    doc.add_paragraph(cost_estimation)
+
+    # Disclaimer
+    doc.add_heading('Disclaimer', level=1)
+    doc.add_paragraph("This project proposal is valid for 30 days from the date of issue. Please review and confirm all details within this period.")
 
     # Save the document
     file_path = f"{project_name}_Proposal_{datetime.now().strftime('%Y%m%d%H%M%S')}.docx"
@@ -131,7 +194,8 @@ def save_to_word(project_name, project_overview, modules, tech_stack, user_roles
     return file_path
 
 # Display the full project proposal
-def display_project_proposal(project_name, project_overview, modules, tech_stack, user_roles, wbs, user_flow, dfd, erd, cost_estimation):
+# Display the full project proposal
+def display_project_proposal(project_name, project_overview, modules, tech_stack, user_roles, user_stories, wbs, user_flow, dfd, erd, cost_estimation):
     st.markdown(f"### Title: {project_name}")
     st.markdown(f"### Date: {datetime.now().strftime('%Y-%m-%d')}")
     st.markdown("### Reviewer: Mr. Aqib")
@@ -148,6 +212,11 @@ def display_project_proposal(project_name, project_overview, modules, tech_stack
     st.markdown("### User Roles")
     st.write(user_roles)
 
+    st.markdown("### User Stories and Use Cases")
+    if user_stories:
+        df_stories = pd.DataFrame(user_stories)
+        st.table(df_stories)  # Display the user stories and use cases in a table
+
     st.markdown("### User Flow (Mermaid.js)")
     st.code(user_flow, language="mermaid")
 
@@ -161,10 +230,17 @@ def display_project_proposal(project_name, project_overview, modules, tech_stack
     st.write(wbs)
 
     st.markdown("### Cost Estimation")
-    st.write(f"Total Project Cost Estimate: ${cost_estimation}")
+    # Display detailed costs in a table
+    df_costs = pd.DataFrame(cost_estimation)
+    total_cost = df_costs['Adjusted Cost'].sum()
+    
+    st.table(df_costs)
+    st.markdown(f"**Total Project Cost Estimate: ${total_cost:,.2f}**")
 
     # Generate and provide download link for the Word document
-    word_file_path = save_to_word(project_name, project_overview, modules, tech_stack, user_roles, wbs, user_flow, dfd, erd, cost_estimation)
+    word_file_path = save_to_word(project_name, project_overview, modules, tech_stack, user_roles, 
+                                 pd.DataFrame(user_stories).to_string(), wbs, user_flow, dfd, erd, 
+                                 pd.DataFrame(cost_estimation).to_string())
     with open(word_file_path, "rb") as f:
         st.download_button(
             label="Download Proposal as Word Document",
@@ -182,7 +258,7 @@ def main():
         project_overview = st.text_area("Provide the overall project idea")
         modules = st.text_area("List the main modules or features of the application")
         tech_stack = st.text_input("Do you have a preferred tech stack? (Leave blank for suggestions)")
-        user_roles = st.text_input("Define the user roles (e.g., Admin, User)")
+        user_roles = st.text_area("Define the user roles (e.g., Admin, User)")
 
         design = st.radio("Do you have the design?", ("Yes", "No"))
         overlap = None
@@ -213,6 +289,9 @@ def main():
         if submitted:
             st.info("Generating proposal... This may take a moment.")
 
+            # Generate user stories and use cases
+            user_stories = generate_user_stories_and_use_cases(modules, user_roles)
+
             # Calculate timeline based on complexity
             total_timeline = calculate_timeline(complexity)
 
@@ -237,6 +316,7 @@ def main():
                 modules,
                 tech_stack,
                 user_roles,
+                user_stories,
                 wbs,
                 user_flow,
                 dfd,
